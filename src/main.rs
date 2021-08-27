@@ -3,12 +3,16 @@ use std::path::Path;
 use image::{GenericImage, GenericImageView, ImageBuffer, RgbaImage};
 use qrcode_generator::QrCodeEcc;
 use std::time::Instant;
+use svg::node::element;
+use svg::node::element::path::Data;
+use svg::Document;
 
 static WHITE: image::Rgba<u8> = image::Rgba([255, 255, 255, 255]);
 static BLACK: image::Rgba<u8> = image::Rgba([0, 0, 0, 255]);
 
 struct QrImage {
     img: RgbaImage,
+    // img: Document,
     num_modules: u32,
     module_size: u32,
     qr_offset: u32,
@@ -216,4 +220,26 @@ fn main() {
 
     let elapsed = now.elapsed();
     println!("Elapsed: {:.2?}", elapsed);
+
+    // let data = Data::new()
+    //     .move_to((10, 10))
+    //     .line_by((0, 50))
+    //     .line_by((50, 0))
+    //     .line_by((0, -50))
+    //     .close();
+
+    // let path = element::Path::new()
+    //     .set("fill", "none")
+    //     .set("stroke", "black")
+    //     .set("stroke-width", 3)
+    //     .set("d", data);
+
+    let r = element::Rectangle::new()
+        .set("width", 30)
+        .set("height", 10)
+        .set("style", "fill:rgb(0,0,255);");
+
+    let document = Document::new().set("viewBox", (0, 0, 70, 70)).add(r);
+
+    svg::save("image.svg", &document).unwrap();
 }
