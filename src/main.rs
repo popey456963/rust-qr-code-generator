@@ -1,18 +1,20 @@
 use std::path::Path;
 
-use image::{GenericImage, GenericImageView, ImageBuffer, RgbaImage};
+use image::GenericImageView;
 use qrcode_generator::QrCodeEcc;
+use std::io::Cursor;
+use std::io::SeekFrom;
 use std::time::Instant;
 use svg::node::element;
-use svg::node::element::path::Data;
 use svg::Document;
 
 static WHITE: image::Rgba<u8> = image::Rgba([255, 255, 255, 255]);
 static BLACK: image::Rgba<u8> = image::Rgba([0, 0, 0, 255]);
+static BOX_SIZE: u32 = 100;
 
 struct QrImage {
-    img: RgbaImage,
-    // img: Document,
+    // img: RgbaImage,
+    img: Option<Document>,
     num_modules: u32,
     module_size: u32,
     qr_offset: u32,
@@ -21,14 +23,23 @@ struct QrImage {
 impl QrImage {
     fn new(num_modules: u32, image_size: u32) -> QrImage {
         let qr_len = num_modules + 8;
-        let module_size = image_size / qr_len as u32;
-        let qr_offset = module_size * 4 + (image_size - qr_len * module_size) / 2;
+        // let module_size = image_size / qr_len as u32;
+        let module_size = 100;
+        let qr_offset = module_size * 4;
         dbg!(qr_len, module_size, qr_offset);
 
-        let mut img = ImageBuffer::from_fn(image_size, image_size, |x, y| WHITE);
+        let background = element::Rectangle::new()
+            .set("width", qr_len * BOX_SIZE)
+            .set("height", qr_len * BOX_SIZE)
+            .set("style", "fill:rgb(255,255,255);");
+
+        let img = Document::new()
+            .set("viewBox", (0, 0, qr_len * BOX_SIZE, qr_len * BOX_SIZE))
+            //.set("shape-rendering", "crispEdges")
+            .add(background);
 
         QrImage {
-            img: img,
+            img: Some(img),
             num_modules: num_modules,
             module_size: module_size,
             qr_offset: qr_offset,
@@ -55,11 +66,19 @@ impl QrImage {
     }
 
     fn draw_box(&mut self, x_offset: u32, y_offset: u32, size: u32, colour: image::Rgba<u8>) {
-        for x in x_offset..x_offset + size {
-            for y in y_offset..y_offset + size {
-                self.draw_pixel(x + self.qr_offset, y + self.qr_offset, colour);
-            }
-        }
+        let colour_str = format!(
+            "rgba({},{},{},{})",
+            colour[0], colour[1], colour[2], colour[3]
+        );
+        let r = element::Rectangle::new()
+            .set("x", self.qr_offset + x_offset)
+            .set("y", self.qr_offset + y_offset)
+            .set("width", size)
+            .set("height", size)
+            .set("fill", colour_str);
+
+        let tmp = self.img.take().unwrap();
+        self.img = Some(tmp.add(r));
     }
 
     fn draw_circle(
@@ -69,28 +88,45 @@ impl QrImage {
         diameter: u32,
         colour: image::Rgba<u8>,
     ) {
-        let radius = diameter as f32 / 2.0;
-        let center_x = x_offset as f32 + radius;
-        let center_y = y_offset as f32 + radius;
+        let colour_str = format!(
+            "rgba({},{},{},{})",
+            colour[0], colour[1], colour[2], colour[3]
+        );
+        let radius = diameter as f64 / 2.0;
 
-        for x in x_offset..x_offset + diameter {
-            for y in y_offset..y_offset + diameter {
-                let distance = (center_x - x as f32).powf(2.0) + (center_y - y as f32).powf(2.0);
+        let circle = element::Circle::new()
+            .set("cx", self.qr_offset as f64 + x_offset as f64 + radius)
+            .set("cy", self.qr_offset as f64 + y_offset as f64 + radius)
+            .set("r", radius)
+            .set("fill", colour_str);
 
-                //dbg!(x, y, distance.sqrt());
-                if distance < radius * radius {
-                    self.draw_pixel(x + self.qr_offset, y + self.qr_offset, colour);
-                }
-            }
-        }
+        let tmp = self.img.take().unwrap();
+        self.img = Some(tmp.add(circle));
     }
 
-    fn draw_pixel(&mut self, x: u32, y: u32, colour: image::Rgba<u8>) {
-        *self.img.get_pixel_mut(x, y) = colour;
+    fn write_to_file(&mut self) {
+        let tmp = self.img.take().unwrap();
+        svg::save("image.svg", &tmp).unwrap();
+        self.img = Some(tmp);
+        // self.img.save("src/static/test.png").unwrap();
     }
 
-    fn write_to_file(&self) {
-        self.img.save("src/static/test.png").unwrap();
+    fn write_to_png(&mut self, size: u32) {
+        let tmp = self.img.take().unwrap();
+        let mut svg = Cursor::new(Vec::new());
+        svg::write(&mut svg, &tmp);
+        self.img = Some(tmp);
+
+        let svg_data = svg.into_inner();
+
+        let mut opt = usvg::Options::default();
+        let rtree = usvg::Tree::from_data(&svg_data, &opt.to_ref()).unwrap();
+
+        //let pixmap_size = rtree.svg_node().size.to_screen_size();
+        //let mut pixmap = tiny_skia::Pixmap::new(pixmap_size.width(), pixmap_size.height()).unwrap();
+        let mut pixmap = tiny_skia::Pixmap::new(size, size).unwrap();
+        resvg::render(&rtree, usvg::FitTo::Height(size), pixmap.as_mut()).unwrap();
+        pixmap.save_png("qr.png").unwrap();
     }
 }
 
@@ -108,7 +144,7 @@ fn draw_image(matrix: &Vec<Vec<bool>>, final_image_size: u32) {
     for (row_index, row) in matrix.iter().enumerate() {
         for (col_index, cell) in row.iter().enumerate() {
             if *cell && !is_in_finder_pattern(col_index as u32, row_index as u32, img.num_modules) {
-                img.draw_box(
+                img.draw_circle(
                     row_index as u32 * img.module_size,
                     col_index as u32 * img.module_size,
                     img.module_size,
@@ -126,12 +162,12 @@ fn draw_image(matrix: &Vec<Vec<bool>>, final_image_size: u32) {
         central_section += 1;
     }
 
-    img.draw_box(
-        (img.num_modules - central_section) * img.module_size / 2,
-        (img.num_modules - central_section) * img.module_size / 2,
-        central_section * img.module_size,
-        WHITE,
-    );
+    // img.draw_box(
+    //     (img.num_modules - central_section) * img.module_size / 2,
+    //     (img.num_modules - central_section) * img.module_size / 2,
+    //     central_section * img.module_size,
+    //     WHITE,
+    // );
 
     let mut overlay = image::open(&Path::new("./src/central_images/test_red.png"))
         .ok()
@@ -158,27 +194,27 @@ fn draw_image(matrix: &Vec<Vec<bool>>, final_image_size: u32) {
 
     dbg!(resized_overlay.width(), resized_overlay.height());
 
-    image::imageops::overlay(
-        &mut img.img,
-        &resized_overlay,
-        central_section_offset as u32
-            + img.qr_offset
-            + ((central_section * img.module_size) as f32 * 0.05) as u32
-            + ((1.0 - width_multiplier) * central_section_size as f64 * 0.5) as u32,
-        central_section_offset as u32
-            + img.qr_offset
-            + ((central_section * img.module_size) as f32 * 0.05) as u32
-            + ((1.0 - height_multiplier) * central_section_size as f64 * 0.5) as u32,
-    );
+    // image::imageops::overlay(
+    //     &mut img.img,
+    //     &resized_overlay,
+    //     central_section_offset as u32
+    //         + img.qr_offset
+    //         + ((central_section * img.module_size) as f32 * 0.05) as u32
+    //         + ((1.0 - width_multiplier) * central_section_size as f64 * 0.5) as u32,
+    //     central_section_offset as u32
+    //         + img.qr_offset
+    //         + ((central_section * img.module_size) as f32 * 0.05) as u32
+    //         + ((1.0 - height_multiplier) * central_section_size as f64 * 0.5) as u32,
+    // );
 
-    img.img = image::imageops::resize(
-        &mut img.img,
-        final_image_size / 4,
-        final_image_size / 4,
-        image::imageops::FilterType::Lanczos3,
-    );
+    // img.img = image::imageops::resize(
+    //     &mut img.img,
+    //     final_image_size / 4,
+    //     final_image_size / 4,
+    //     image::imageops::FilterType::Lanczos3,
+    // );
 
-    img.write_to_file();
+    img.write_to_png(final_image_size);
 }
 
 fn main() {
@@ -216,30 +252,8 @@ fn main() {
     }
 
     let now = Instant::now();
-    draw_image(&result, 2048);
+    draw_image(&result, 200);
 
     let elapsed = now.elapsed();
     println!("Elapsed: {:.2?}", elapsed);
-
-    // let data = Data::new()
-    //     .move_to((10, 10))
-    //     .line_by((0, 50))
-    //     .line_by((50, 0))
-    //     .line_by((0, -50))
-    //     .close();
-
-    // let path = element::Path::new()
-    //     .set("fill", "none")
-    //     .set("stroke", "black")
-    //     .set("stroke-width", 3)
-    //     .set("d", data);
-
-    let r = element::Rectangle::new()
-        .set("width", 30)
-        .set("height", 10)
-        .set("style", "fill:rgb(0,0,255);");
-
-    let document = Document::new().set("viewBox", (0, 0, 70, 70)).add(r);
-
-    svg::save("image.svg", &document).unwrap();
 }
